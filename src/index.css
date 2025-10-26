@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+@layer base, components, utilities;
+
+/* Base */
+:root{
+  --bg: #f6f8fb;
+  --card: #ffffff;
+  --muted: #6b7280;
+  --primary: #0b63d6;
+  --accent: #10b981;
+  --shadow: rgba(12, 24, 40, 0.06);
+}
+
+*{box-sizing:border-box}
+html,body,#root{height:100%}
+body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 0; color: #0f172a; background: var(--bg); }
+
+a { color: var(--primary); text-decoration: none; }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+/* App shell */
+.app-shell{ display:grid; grid-template-columns: 220px 1fr; min-height:100vh; }
+.sidebar{ background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%); border-right:1px solid #e6eef8; padding:20px; }
+.brand a{ font-weight:700; color:var(--primary); font-size:18px; }
+.side-nav{ margin-top:18px; display:flex; flex-direction:column; gap:8px; }
+.nav-link{ padding:10px 12px; border-radius:8px; color:#0f172a; display:inline-block; }
+.nav-link:hover{ background:#eef6ff; color:var(--primary) }
+
+.topbar{ grid-column: 2; display:flex; justify-content:space-between; align-items:center; padding:16px 24px; background:transparent; border-bottom:1px solid transparent; }
+.page-title{ margin:0; font-size:16px; color:#0b1530; }
+
+.main-content{ padding:24px; grid-column:2; }
+
+/* Cards */
+.card{ background:var(--card); padding:16px; border-radius:10px; box-shadow: 0 6px 18px var(--shadow); margin-bottom:16px; }
+.grid-3{ display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }
+.grid-2{ display:grid; grid-template-columns: 1fr 320px; gap:16px; }
+
+/* Lists and tables */
+.patient-list{ display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.patient-item{ padding:12px; border-radius:8px; background:linear-gradient(180deg,#fff,#fbfdff); display:flex; justify-content:space-between; align-items:center; border:1px solid #eef6ff; }
+.small{ font-size:13px; color:var(--muted) }
+
+/* Buttons */
+.btn{ padding:8px 12px; border-radius:8px; border: none; background:var(--primary); color:#fff; font-weight:600; }
+.btn-ghost{ background:transparent; color:var(--primary); border:1px solid transparent; padding:6px 10px; border-radius:8px; }
+.btn:active{ transform:translateY(1px) }
+
+/* Forms */
+.input, input, textarea, select { width:100%; padding:10px; border-radius:8px; border:1px solid #e6eef8; background:#fbfdff; }
+label{ font-size:13px; color:#0b1530; margin-bottom:6px; display:block; }
+
+/* Responsive */
+@media (max-width:900px){
+  .app-shell{ grid-template-columns: 1fr; }
+  .sidebar{ display:flex; gap:12px; overflow-x:auto; }
+  .grid-3{ grid-template-columns: 1fr; }
+  .grid-2{ grid-template-columns: 1fr; }
+  .topbar{ padding:12px; }
+  .main-content{ padding:12px; }
+}
