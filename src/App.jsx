@@ -10,6 +10,7 @@ import PatientDetail from './pages/PatientDetail';
 import AddPatient from './pages/AddPatient';
 import Archive from './pages/Archive';
 import { createMockMeasurement, padBoxAPI } from './utils/ehrDummyData';
+import AITestPage from './pages/AITestPage';
 
 // Create context for user authentication
 const AuthContext = createContext(null);
@@ -112,6 +113,10 @@ function App() {
               path="/" 
               element={<Navigate to={user ? "/dashboard" : "/login"} replace />} 
             />
+            <Route 
+              path="/test-ai" 
+              element={<AITestPage />} 
+            />  
           </Routes>
         </div>
     </AuthContext.Provider>

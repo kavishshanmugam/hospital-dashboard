@@ -3,29 +3,24 @@ import { useEffect, useState } from 'react';
 import { collection, doc, onSnapshot, orderBy, query, setDoc, deleteDoc, updateDoc, increment } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { usePadAnalysis } from '../hooks/usePadAnalysis';
+import { padAnalyzer } from '../utils/padAnalyzer';
 import { 
   User, 
   Calendar, 
   Activity, 
-  TrendingUp, 
-  AlertTriangle, 
-  Clock,
-  Heart,
-  Eye,
   ArrowLeft,
   LogOut,
-  Camera,
   Brain,
   CheckCircle,
   XCircle,
   FileText,
   Plus,
-  Save,
-  Trash2
+  Trash2,
+  Droplet,
+  Clock
 } from 'lucide-react';
 
-// Analysis Display Component
+// Updated Analysis Display Component
 const AnalysisDisplay = ({ analysis }) => {
   if (!analysis) return (
     <div className="border-l-4 border-gray-300 bg-gray-50 p-4 rounded-r-lg">
@@ -68,64 +63,64 @@ const AnalysisDisplay = ({ analysis }) => {
           <h4 className="font-bold text-lg text-gray-800">AI Analysis</h4>
         </div>
         <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${badgeClasses}`}>
-          {analysis.riskLevel}
+          {analysis.riskLevel} RISK
         </span>
       </div>
       
       <div className="grid grid-cols-2 gap-3 mb-3">
         <div className="bg-white p-2 rounded-lg">
-          <p className="text-xs text-gray-500">Confidence</p>
-          <p className="text-lg font-bold text-blue-600">{analysis.confidence}%</p>
+          <p className="text-xs text-gray-500">Blood Loss</p>
+          <p className="text-lg font-bold text-red-600">{analysis.findings?.estimatedBloodLossMl || 0} mL</p>
         </div>
         <div className="bg-white p-2 rounded-lg">
-          <p className="text-xs text-gray-500">Detection Status</p>
-          <p className="text-sm font-semibold text-gray-700">
-            {analysis.findings?.bloodDetected ? '✓ Blood' : '○ No Blood'}
-            {analysis.findings?.clotPresence ? ' | ✓ Clots' : ''}
-          </p>
+          <p className="text-xs text-gray-500">Visual Coverage</p>
+          <p className="text-lg font-bold text-blue-600">{Math.round((analysis.findings?.coverage || 0) * 100)}%</p>
         </div>
       </div>
       
-      {analysis.findings?.colorAnalysis && (
-        <div className="bg-white p-3 rounded-lg mb-3">
-          <p className="font-semibold text-sm text-gray-700 mb-2">Color Analysis</p>
-          <div className="space-y-2">
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-red-600 font-medium">Red</span>
-                <span className="font-bold">{analysis.findings.colorAnalysis.red}%</span>
+      {analysis.findings?.clotCount > 0 && (
+        <div className="bg-red-50 border border-red-200 p-3 rounded-lg mb-3">
+          <p className="font-semibold text-sm text-red-800 mb-2 flex items-center">
+            🩸 Blood Clots: {analysis.findings.clotCount}
+          </p>
+          <div className="space-y-1">
+            {analysis.findings.clots.map((clot, idx) => (
+              <div key={idx} className="text-xs bg-white p-2 rounded flex justify-between items-center">
+                <span className="font-medium text-red-700">Clot {idx + 1}</span>
+                <div className="text-gray-600">
+                  {clot.estimatedCm2 && <span className="mr-2">{clot.estimatedCm2}cm²</span>}
+                  <span className="text-xs">V:{clot.meanValue} S:{clot.meanSaturation}</span>
+                </div>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-red-500 h-2 rounded-full" style={{width: `${analysis.findings.colorAnalysis.red}%`}}></div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analysis.findings?.darkRegionCount > 0 && (
+        <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg mb-3">
+          <p className="font-semibold text-sm text-orange-800 mb-2">
+            Dark Regions: {analysis.findings.darkRegionCount}
+          </p>
+          <div className="space-y-1">
+            {analysis.findings.darkRegions.map((region, idx) => (
+              <div key={idx} className="text-xs bg-white p-2 rounded flex justify-between items-center">
+                <span className="font-medium">Region {idx + 1}</span>
+                <div className="text-gray-600">
+                  {region.estimatedCm2 && <span className="mr-2">{region.estimatedCm2}cm²</span>}
+                  <span className="text-xs">V:{region.meanValue} S:{region.meanSaturation}</span>
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-amber-700 font-medium">Brown</span>
-                <span className="font-bold">{analysis.findings.colorAnalysis.brown}%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-amber-600 h-2 rounded-full" style={{width: `${analysis.findings.colorAnalysis.brown}%`}}></div>
-              </div>
-            </div>
-            <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-pink-600 font-medium">Pink</span>
-                <span className="font-bold">{analysis.findings.colorAnalysis.pink}%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-pink-500 h-2 rounded-full" style={{width: `${analysis.findings.colorAnalysis.pink}%`}}></div>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       )}
       
       <div className="bg-white p-3 rounded-lg">
-        <p className="font-semibold text-sm text-gray-700 mb-2">Findings</p>
+        <p className="font-semibold text-sm text-gray-700 mb-2">Recommendations</p>
         <ul className="space-y-1">
-          {analysis.findings?.abnormalities?.map((item, index) => (
-            <li key={index} className="text-xs text-gray-600 flex items-start">
+          {analysis.recommendations?.map((item, index) => (
+            <li key={index} className={`text-xs flex items-start ${item.includes('IMMEDIATE') ? 'text-red-700 font-semibold' : 'text-gray-600'}`}>
               <span className="text-blue-500 mr-2">•</span>
               <span>{item}</span>
             </li>
@@ -144,7 +139,21 @@ export default function PatientDetail() {
   const [loading, setLoading] = useState(true);
   const [clinicalNotes, setClinicalNotes] = useState([]);
   const [newNote, setNewNote] = useState('');
-  const { analyze } = usePadAnalysis();
+  const [analyzerReady, setAnalyzerReady] = useState(false);
+
+  // Initialize the PadAnalyzer
+  useEffect(() => {
+    const initAnalyzer = async () => {
+      try {
+        await padAnalyzer.initialize();
+        setAnalyzerReady(true);
+        console.log('✅ PadAnalyzer initialized for patient detail');
+      } catch (err) {
+        console.error('❌ PadAnalyzer initialization failed:', err);
+      }
+    };
+    initAnalyzer();
+  }, []);
 
   useEffect(() => {
     const unsubPatient = onSnapshot(doc(db, "patients", id), (docSnap) => {
@@ -168,17 +177,28 @@ export default function PatientDetail() {
         if (docChange.type === "added") {
           const measurementData = { id: docChange.doc.id, ...docChange.doc.data() };
           
-          // Run AI analysis if image exists and no analysis yet
-          if (measurementData.imageUrl && !measurementData.analysis) {
+          // Run AI analysis if image exists, analyzer is ready, and no analysis yet
+          if (measurementData.imageUrl && analyzerReady && !measurementData.analysis) {
             try {
-              const analysisResult = await analyze(measurementData.imageUrl);
+              console.log('🔍 Running AI analysis on new measurement:', measurementData.id);
+              
+              // Get weight from measurement
+              const weightGrams = measurementData.weight_g || 0;
+              
+              // Run analysis
+              const analysisResult = await padAnalyzer.analyzePadImage(
+                measurementData.imageUrl,
+                weightGrams
+              );
+              
+              console.log('✅ Analysis complete for measurement:', measurementData.id);
               
               // Update the measurement document with analysis
               await updateDoc(docChange.doc.ref, { analysis: analysisResult });
               
               measurementData.analysis = analysisResult;
             } catch (error) {
-              console.error('AI Analysis failed:', error);
+              console.error('❌ AI Analysis failed for measurement:', measurementData.id, error);
             }
           }
           
@@ -203,7 +223,7 @@ export default function PatientDetail() {
       unsubPatient();
       unsubMeasurements();
     };
-  }, [id, analyze]);
+  }, [id, analyzerReady]);
 
   const dischargePatient = async () => {
     if (!patient || !window.confirm(`Discharge ${patient.name}?`)) return;
@@ -314,6 +334,12 @@ export default function PatientDetail() {
                   <Calendar className="h-5 w-5 mr-2" />
                   DOB: {patient.dob}
                 </span>
+                {analyzerReady && (
+                  <span className="flex items-center text-green-600">
+                    <CheckCircle className="h-5 w-5 mr-2" />
+                    AI Active
+                  </span>
+                )}
               </div>
             </div>
             
@@ -488,7 +514,7 @@ export default function PatientDetail() {
                       <div className="flex justify-between items-start mb-2">
                         <div className="flex items-center">
                           <div className="bg-red-100 p-2 rounded-lg mr-3">
-                            <Activity className="h-6 w-6 text-red-600" />
+                            <Droplet className="h-6 w-6 text-red-600" />
                           </div>
                           <div>
                             <p className="font-bold text-2xl text-red-600">{m.est_ml} mL</p>

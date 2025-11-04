@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@headlessui/react": "^1.7.18",
+    "@teachablemachine/image": "^0.8.5",
     "@tensorflow/tfjs": "^4.22.0",
     "@tensorflow/tfjs-backend-webgl": "^4.22.0",
     "ai": "^4.3.16",
