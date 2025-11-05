@@ -1,28 +1,131 @@
-// src/utils/padAnalyzer.js
-// Production PadAnalyzer - no Teachable Machine, saturation-based clot detection
+// AI-Powered PadAnalyzer using TensorFlow.js for clot detection
+import * as tf from '@tensorflow/tfjs';
+
 class PadAnalyzer {
   constructor(options = {}) {
     this.options = {
       blurRadius: options.blurRadius ?? 1,
       minClotPixels: options.minClotPixels ?? 40,
       maxClotPixels: options.maxClotPixels ?? 1000,
-      hueTolerance: options.hueTolerance ?? 20,
-      saturationMin: options.saturationMin ?? 0.25,
-      valueMaxForClot: options.valueMaxForClot ?? 0.25,
-      valueMaxForDarkRegion: options.valueMaxForDarkRegion ?? 0.55,
-      valueMinForBlood: options.valueMinForBlood ?? 0.15,
-      clotSaturationMax: options.clotSaturationMax ?? 0.30, // Black has low saturation
-      darkRegionSaturationMin: options.darkRegionSaturationMin ?? 0.30, // Dark red has high saturation
       scalePxPerCm: options.scalePxPerCm ?? null,
       padDryWeightGrams: options.padDryWeightGrams ?? 5,
+      modelConfidenceThreshold: options.modelConfidenceThreshold ?? 0.65,
+      segmentationThreshold: options.segmentationThreshold ?? 0.5,
       ...options
     };
-    this.initialized = true;
+    this.initialized = false;
+    this.segmentationModel = null;
+    this.clotClassifier = null;
   }
 
   async initialize() {
-    console.log('PadAnalyzer: initialized (no external model required).');
-    return true;
+    try {
+      console.log('PadAnalyzer: Initializing AI models...');
+      
+      this.segmentationModel = await this._createSegmentationModel();
+      
+      this.clotClassifier = await this._createClotClassifier();
+      
+      this.initialized = true;
+      console.log('PadAnalyzer: AI models loaded successfully');
+      return true;
+    } catch (error) {
+      console.error('PadAnalyzer initialization failed:', error);
+      throw new Error('Failed to initialize AI models: ' + error.message);
+    }
+  }
+
+  async _createSegmentationModel() {
+    const model = tf.sequential({
+      layers: [
+        tf.layers.conv2d({
+          inputShape: [224, 224, 3],
+          filters: 32,
+          kernelSize: 3,
+          activation: 'relu',
+          padding: 'same'
+        }),
+        tf.layers.maxPooling2d({ poolSize: 2 }),
+        
+        tf.layers.conv2d({
+          filters: 64,
+          kernelSize: 3,
+          activation: 'relu',
+          padding: 'same'
+        }),
+        tf.layers.maxPooling2d({ poolSize: 2 }),
+        
+        tf.layers.conv2d({
+          filters: 128,
+          kernelSize: 3,
+          activation: 'relu',
+          padding: 'same'
+        }),
+        
+        tf.layers.upSampling2d({ size: [2, 2] }),
+        tf.layers.conv2d({
+          filters: 64,
+          kernelSize: 3,
+          activation: 'relu',
+          padding: 'same'
+        }),
+        
+        tf.layers.upSampling2d({ size: [2, 2] }),
+        tf.layers.conv2d({
+          filters: 32,
+          kernelSize: 3,
+          activation: 'relu',
+          padding: 'same'
+        }),
+        
+        tf.layers.conv2d({
+          filters: 3,
+          kernelSize: 1,
+          activation: 'softmax',
+          padding: 'same'
+        })
+      ]
+    });
+    
+    return model;
+  }
+
+  // Create clot classification model
+  async _createClotClassifier() {
+    const model = tf.sequential({
+      layers: [
+        // Input: 64x64x3 region patch
+        tf.layers.conv2d({
+          inputShape: [64, 64, 3],
+          filters: 32,
+          kernelSize: 3,
+          activation: 'relu'
+        }),
+        tf.layers.maxPooling2d({ poolSize: 2 }),
+        
+        tf.layers.conv2d({
+          filters: 64,
+          kernelSize: 3,
+          activation: 'relu'
+        }),
+        tf.layers.maxPooling2d({ poolSize: 2 }),
+        
+        tf.layers.conv2d({
+          filters: 128,
+          kernelSize: 3,
+          activation: 'relu'
+        }),
+        tf.layers.globalAveragePooling2d(),
+        
+        tf.layers.dense({ units: 128, activation: 'relu' }),
+        tf.layers.dropout({ rate: 0.5 }),
+        
+        // Output: [not_clot, small_clot, large_clot, old_blood]
+        tf.layers.dense({ units: 4, activation: 'softmax' })
+      ]
+    });
+    
+    return model;
   }
 
   calibrateScale(padWidthCm, imagePadWidthPx) {
@@ -32,321 +135,337 @@ class PadAnalyzer {
   }
 
   dispose() {
+    if (this.segmentationModel) {
+      this.segmentationModel.dispose();
+      this.segmentationModel = null;
+    }
+    if (this.clotClassifier) {
+      this.clotClassifier.dispose();
+      this.clotClassifier = null;
+    }
     this.initialized = false;
+    console.log('PadAnalyzer: Models disposed');
   }
 
   async analyzePadImage(imageSource, weightGrams = 0, opts = {}) {
     if (!this.initialized) {
       throw new Error('Analyzer not initialized. Call initialize() first.');
     }
-    const mergedOptions = { ...this.options, ...opts };
-
-    const img = await this._loadImage(imageSource);
-    const maxDim = 800;
-    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-    const canvasW = Math.round(img.width * scale);
-    const canvasH = Math.round(img.height * scale);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = canvasW;
-    canvas.height = canvasH;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvasW, canvasH);
-
-    if (mergedOptions.blurRadius > 0) {
-      this._boxBlurCanvas(canvas, mergedOptions.blurRadius);
-    }
-
-    const imgData = ctx.getImageData(0, 0, canvasW, canvasH);
-    const mask = this._buildBloodMask(imgData, mergedOptions);
-    const components = this._connectedComponents(mask, imgData);
-
-    const clots = [];
-    const darkRegions = [];
-    const avgBloodValue = this._estimateAvgBloodValue(imgData, mask) || 0.5;
-
-    components.forEach((comp) => {
-      if (comp.pixels < mergedOptions.minClotPixels) return;
-      if (comp.pixels > mergedOptions.maxClotPixels) return;
-
-      const meanValue = comp.sumValue / comp.pixels;
-      const meanSaturation = comp.sumSaturation / comp.pixels;
-      const darkerThanBlood = (avgBloodValue - meanValue);
-
-      const areaCm2 = this._pixelsToCm2(comp.pixels, mergedOptions.scalePxPerCm);
-
-      // CLOTS: Only black regions (low Value AND low Saturation)
-      if (meanValue <= mergedOptions.valueMaxForClot && meanSaturation <= mergedOptions.clotSaturationMax) {
-        clots.push({
-          pixels: comp.pixels,
-          bbox: comp.bbox,
-          meanValue: Math.round(meanValue * 100) / 100,
-          meanSaturation: Math.round(meanSaturation * 100) / 100,
-          darkerThanBlood: Math.round(darkerThanBlood * 100) / 100,
-          estimatedCm2: areaCm2,
-          confidence: Math.min(98, Math.round(50 + darkerThanBlood * 300)),
-        });
-      }
-      // DARK REGIONS: Darker red areas (high saturation = colored)
-      else if (meanValue > mergedOptions.valueMaxForClot && 
-               meanValue <= mergedOptions.valueMaxForDarkRegion && 
-               meanSaturation > mergedOptions.darkRegionSaturationMin &&
-               darkerThanBlood > 0.06) {
-        darkRegions.push({
-          pixels: comp.pixels,
-          bbox: comp.bbox,
-          meanValue: Math.round(meanValue * 100) / 100,
-          meanSaturation: Math.round(meanSaturation * 100) / 100,
-          darkerThanBlood: Math.round(darkerThanBlood * 100) / 100,
-          estimatedCm2: areaCm2,
-          confidence: Math.min(90, Math.round(40 + darkerThanBlood * 250)),
-        });
-      }
-    });
-
-    clots.sort((a, b) => a.meanValue - b.meanValue);
-    darkRegions.sort((a, b) => a.meanValue - b.meanValue);
     
-    const topClots = clots.slice(0, 3);
-    const topDarkRegions = darkRegions.slice(0, 3);
-
-    const coverage = this._estimateCoverage(imgData, mask);
-    const flow = this._estimateFlow(weightGrams, coverage, mergedOptions.padDryWeightGrams);
-
-    let riskLevel;
-    const estimatedMl = flow.estimatedMl;
-    const clotFound = topClots.length > 0;
-
-    if (estimatedMl >= 250) {
-      riskLevel = 'high';
-    } else if (clotFound) {
-      riskLevel = 'moderate';
-    } else if (estimatedMl < 200 && !clotFound) {
-      riskLevel = 'low';
-    } else {
-      riskLevel = 'moderate';
+    const mergedOptions = { ...this.options, ...opts };
+    
+    try {
+      const img = await this._loadImage(imageSource);
+      const preprocessed = await this._preprocessImage(img, mergedOptions);
+      
+      const segmentationResult = await this._runSegmentation(preprocessed);
+      
+      const regions = await this._extractRegions(
+        img, 
+        segmentationResult, 
+        mergedOptions
+      );
+      
+      const classifiedClots = await this._classifyRegions(regions, mergedOptions);
+      
+      const coverage = this._calculateCoverage(segmentationResult);
+      const flow = this._estimateFlow(weightGrams, coverage, mergedOptions.padDryWeightGrams);
+      
+      const riskLevel = this._assessRisk(classifiedClots, flow);
+      
+      const findings = this._generateFindings(classifiedClots, flow, coverage);
+      
+      preprocessed.dispose();
+      segmentationResult.dispose();
+      
+      return {
+        timestamp: new Date().toISOString(),
+        findings: {
+          bloodDetected: coverage > 0.02,
+          coverage,
+          clots: classifiedClots.filter(c => c.isClot).map(c => ({
+            estimatedCm2: c.estimatedCm2,
+            pixels: c.pixels,
+            type: c.clotType,
+            confidence: c.confidence,
+            bbox: c.bbox
+          })),
+          darkRegions: classifiedClots.filter(c => !c.isClot && c.clotType === 'concentrated_blood').map(d => ({
+            estimatedCm2: d.estimatedCm2,
+            pixels: d.pixels,
+            confidence: d.confidence,
+            bbox: d.bbox
+          })),
+          clotCount: classifiedClots.filter(c => c.isClot).length,
+          darkRegionCount: classifiedClots.filter(c => !c.isClot && c.clotType === 'concentrated_blood').length,
+          flow,
+          estimatedBloodLossMl: flow.estimatedMl
+        },
+        recommendations: this._buildRecommendations(riskLevel, flow, classifiedClots),
+        riskLevel,
+        modelVersion: '1.0.0-ai',
+        raw: {
+          totalRegionsAnalyzed: regions.length,
+          allFindings: findings
+        }
+      };
+    } catch (error) {
+      console.error('Analysis failed:', error);
+      throw new Error('Pad analysis failed: ' + error.message);
     }
-
-    const findings = [
-      `${flow.description} (Estimated blood loss: ${flow.estimatedMl} ml)`,
-      `Visual Coverage: ${Math.round(coverage * 100)}% of non-background area is blood-colored.`,
-      topClots.length ? `${topClots.length} blood clot(s) detected (black regions).` : '',
-      topDarkRegions.length ? `${topDarkRegions.length} dark region(s) detected (concentrated darker red areas).` : '',
-      ...(topClots.some(c => c.estimatedCm2 && c.estimatedCm2 >= 1.5) 
-        ? ['One or more large blood clots (>= 1.5cm²) detected.'] 
-        : []
-      ),
-      ...(flow.level === 'critical' 
-        ? ['Flow volume is critically high (>250mL).'] 
-        : (flow.level === 'heavy') 
-        ? ['Heavy flow detected (15mL to 249.9mL).']
-        : []
-      )
-    ].filter(Boolean);
-
-    return {
-      timestamp: new Date().toISOString(),
-      findings: {
-        bloodDetected: coverage > 0.02,
-        coverage,
-        clots: topClots.map(c => ({
-          estimatedCm2: c.estimatedCm2,
-          pixels: c.pixels,
-          meanValue: c.meanValue,
-          meanSaturation: c.meanSaturation,
-          darkerThanBlood: c.darkerThanBlood,
-          confidence: c.confidence,
-        })),
-        darkRegions: topDarkRegions.map(d => ({
-          estimatedCm2: d.estimatedCm2,
-          pixels: d.pixels,
-          meanValue: d.meanValue,
-          meanSaturation: d.meanSaturation,
-          darkerThanBlood: d.darkerThanBlood,
-          confidence: d.confidence,
-        })),
-        clotCount: topClots.length,
-        darkRegionCount: topDarkRegions.length,
-        flow,
-        estimatedBloodLossMl: flow.estimatedMl
-      },
-      recommendations: this._buildRecommendations(riskLevel, flow, topClots),
-      riskLevel,
-      raw: {
-        componentsFound: components.length,
-        avgBloodValue,
-        allFindings: findings
-      }
-    };
   }
 
-  _loadImage(imageSource) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => resolve(img);
-      img.onerror = (e) => reject(new Error('Image failed to load: ' + e));
-      if (typeof imageSource === 'string') img.src = imageSource;
-      else if (imageSource instanceof File) {
-        const reader = new FileReader();
-        reader.onload = e => img.src = e.target.result;
-        reader.onerror = e => reject(e);
-        reader.readAsDataURL(imageSource);
-      } else {
-        reject(new Error('Unsupported imageSource type'));
-      }
+  async _preprocessImage(img, opts) {
+    return tf.tidy(() => {
+      let tensor = tf.browser.fromPixels(img);
+      
+      tensor = tf.image.resizeBilinear(tensor, [224, 224]);
+      
+      tensor = tensor.div(255.0);
+      
+      tensor = this._normalizeColors(tensor);
+      
+      tensor = tensor.expandDims(0);
+      
+      return tensor;
     });
   }
 
-  _pixelsToCm2(pixels, scalePxPerCm) {
-    if (!scalePxPerCm || scalePxPerCm <= 0) return null;
-    const cm2 = pixels / (scalePxPerCm * scalePxPerCm);
-    return Math.round(cm2 * 10) / 10;
-  }
-
-  _buildBloodMask(imgData, opts) {
-    const w = imgData.width, h = imgData.height;
-    const data = imgData.data;
-    const mask = new Uint8Array(w * h);
-
-    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-      const r = data[i] / 255;
-      const g = data[i + 1] / 255;
-      const b = data[i + 2] / 255;
-      const { h: hue, s: sat, v: val } = this._rgbToHsv(r, g, b);
-
-      const hueDeg = hue * 360;
-      const isRedHue = (hueDeg <= opts.hueTolerance) || (hueDeg >= 360 - opts.hueTolerance);
-      const satOk = sat >= opts.saturationMin;
-      const valOk = val >= opts.valueMinForBlood;
+  _normalizeColors(tensor) {
+    return tf.tidy(() => {
+      // Simple white balance: scale each channel independently
+      const mean = tensor.mean([0, 1], true);
+      const std = tf.moments(tensor, [0, 1]).variance.sqrt();
       
-      // Include red/blood regions OR black regions (low saturation = grayscale)
-      const isBlack = val <= 0.25 && sat <= 0.30;
+      // Normalize to mean=0.5, std=0.2
+      return tensor.sub(mean).div(std.add(1e-7)).mul(0.2).add(0.5).clipByValue(0, 1);
+    });
+  }
+
+  async _runSegmentation(preprocessedTensor) {
+    return tf.tidy(() => {
+      // Run segmentation model
+      const prediction = this.segmentationModel.predict(preprocessedTensor);
       
-      if ((isRedHue && satOk && valOk) || isBlack) {
-        mask[p] = 1;
-      } else {
-        mask[p] = 0;
-      }
-    }
-    return { mask, width: w, height: h };
+      // Get class with highest probability for each pixel
+      // Output shape: [1, 224, 224, 3] -> [224, 224]
+      const classMask = prediction.argMax(-1).squeeze();
+      
+      return classMask;
+    });
   }
 
-  _estimateCoverage(imgData, maskObj) {
-    const w = maskObj.width, h = maskObj.height;
-    const data = imgData.data;
-    const mask = maskObj.mask;
-    let nonBg = 0, blood = 0;
-    for (let p = 0, i = 0; p < w * h; p++, i += 4) {
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-      if (r > 230 && g > 230 && b > 230) continue;
-      nonBg++;
-      if (mask[p]) blood++;
-    }
-    return nonBg > 0 ? (blood / nonBg) : 0;
-  }
-
-  _estimateAvgBloodValue(imgData, maskObj) {
-    const w = maskObj.width, h = maskObj.height;
-    const data = imgData.data;
-    const mask = maskObj.mask;
-    let sum = 0, count = 0;
-    for (let p = 0, i = 0; p < w * h; p++, i += 4) {
-      if (!mask[p]) continue;
-      const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
-      const { v } = this._rgbToHsv(r, g, b);
-      sum += v;
-      count++;
-    }
-    return count ? (sum / count) : null;
-  }
-
-  _rgbToHsv(r, g, b) {
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
-    const d = max - min;
-    let h = 0, s = (max === 0 ? 0 : d / max), v = max;
-    if (d !== 0) {
-      if (max === r) h = ((g - b) / d) % 6;
-      else if (max === g) h = ((b - r) / d) + 2;
-      else h = ((r - g) / d) + 4;
-      h = (h * 60) / 360;
-      if (h < 0) h += 1;
-    }
-    return { h, s, v };
-  }
-
-  _boxBlurCanvas(canvas, radius = 1) {
-    if (!radius) return;
+  async _extractRegions(originalImg, segmentationMask, opts) {
+    const maskData = await segmentationMask.data();
+    const maskArray = Array.from(maskData);
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = 224;
+    canvas.height = 224;
     const ctx = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
-    const src = ctx.getImageData(0, 0, w, h);
-    const dst = ctx.createImageData(w, h);
-    const data = src.data, out = dst.data;
-    const kernelSize = (2 * radius + 1) ** 2;
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        let r = 0, g = 0, b = 0, a = 0;
-        for (let ky = -radius; ky <= radius; ky++) {
-          const py = Math.min(h - 1, Math.max(0, y + ky));
-          for (let kx = -radius; kx <= radius; kx++) {
-            const px = Math.min(w - 1, Math.max(0, x + kx));
-            const i = (py * w + px) * 4;
-            r += data[i]; g += data[i + 1]; b += data[i + 2]; a += data[i + 3];
-          }
-        }
-        const o = (y * w + x) * 4;
-        out[o] = Math.round(r / kernelSize);
-        out[o + 1] = Math.round(g / kernelSize);
-        out[o + 2] = Math.round(b / kernelSize);
-        out[o + 3] = Math.round(a / kernelSize);
-      }
-    }
-    ctx.putImageData(dst, 0, 0);
+    ctx.drawImage(originalImg, 0, 0, 224, 224);
+    const imgData = ctx.getImageData(0, 0, 224, 224);
+    
+    const regions = this._findConnectedComponents(maskArray, imgData, 224, 224, opts);
+    
+    return regions;
   }
 
-  _connectedComponents(maskObj, imgData) {
-    const w = maskObj.width, h = maskObj.height;
-    const mask = maskObj.mask;
-    const data = imgData.data;
-    const visited = new Uint8Array(w * h);
-    const comps = [];
-
-    for (let p = 0; p < w * h; p++) {
-      if (!mask[p] || visited[p]) continue;
-      const stack = [p];
-      visited[p] = 1;
-      let pixels = 0;
-      let minX = w, minY = h, maxX = 0, maxY = 0;
-      let sumValue = 0;
-      let sumSaturation = 0;
-
-      while (stack.length) {
-        const cur = stack.pop();
-        const y = Math.floor(cur / w), x = cur % w;
+  _findConnectedComponents(mask, imgData, width, height, opts) {
+    const visited = new Uint8Array(width * height);
+    const regions = [];
+    
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const maskValue = mask[idx];
         
-        pixels++;
-        minX = Math.min(minX, x); minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-
-        const i = (y * w + x) * 4;
-        const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
-        const { s, v } = this._rgbToHsv(r, g, b);
-        sumValue += v;
-        sumSaturation += s;
-
-        const neighbors = [cur + 1, cur - 1, cur + w, cur - w];
-        for (const n of neighbors) {
-          if (n >= 0 && n < w * h && !visited[n] && mask[n]) {
-            visited[n] = 1;
-            stack.push(n);
+        if ((maskValue === 1 || maskValue === 2) && !visited[idx]) {
+          const region = this._floodFill(x, y, width, height, mask, visited, imgData);
+          
+          if (region.pixels >= opts.minClotPixels && region.pixels <= opts.maxClotPixels) {
+            regions.push(region);
           }
         }
       }
-
-      comps.push({ pixels, bbox: { minX, minY, maxX, maxY }, sumValue, sumSaturation });
     }
-    return comps;
+    
+    return regions;
+  }
+
+  _floodFill(startX, startY, width, height, mask, visited, imgData) {
+    const stack = [[startX, startY]];
+    const region = {
+      pixels: 0,
+      bbox: { minX: startX, minY: startY, maxX: startX, maxY: startY },
+      pixelCoords: [],
+      imageData: null
+    };
+    
+    while (stack.length > 0) {
+      const [x, y] = stack.pop();
+      const idx = y * width + x;
+      
+      if (x < 0 || x >= width || y < 0 || y >= height || visited[idx]) {
+        continue;
+      }
+      
+      const maskValue = mask[idx];
+      if (maskValue !== 1 && maskValue !== 2) continue;
+      
+      visited[idx] = 1;
+      region.pixels++;
+      region.pixelCoords.push([x, y]);
+      
+      region.bbox.minX = Math.min(region.bbox.minX, x);
+      region.bbox.minY = Math.min(region.bbox.minY, y);
+      region.bbox.maxX = Math.max(region.bbox.maxX, x);
+      region.bbox.maxY = Math.max(region.bbox.maxY, y);
+      
+      stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+    }
+    
+    region.imageData = this._extractRegionImage(region.bbox, imgData, width, height);
+    
+    return region;
+  }
+
+  _extractRegionImage(bbox, imgData, width, height) {
+    const regionWidth = bbox.maxX - bbox.minX + 1;
+    const regionHeight = bbox.maxY - bbox.minY + 1;
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = regionWidth;
+    canvas.height = regionHeight;
+    const ctx = canvas.getContext('2d');
+    
+    const regionData = ctx.createImageData(regionWidth, regionHeight);
+    
+    for (let y = 0; y < regionHeight; y++) {
+      for (let x = 0; x < regionWidth; x++) {
+        const srcIdx = ((bbox.minY + y) * width + (bbox.minX + x)) * 4;
+        const dstIdx = (y * regionWidth + x) * 4;
+        
+        regionData.data[dstIdx] = imgData.data[srcIdx];
+        regionData.data[dstIdx + 1] = imgData.data[srcIdx + 1];
+        regionData.data[dstIdx + 2] = imgData.data[srcIdx + 2];
+        regionData.data[dstIdx + 3] = imgData.data[srcIdx + 3];
+      }
+    }
+    
+    ctx.putImageData(regionData, 0, 0);
+    return canvas;
+  }
+
+  async _classifyRegions(regions, opts) {
+    const results = [];
+    
+    for (const region of regions) {
+      try {
+        // Resize region to 64x64 for classifier
+        const regionTensor = tf.tidy(() => {
+          let tensor = tf.browser.fromPixels(region.imageData);
+          tensor = tf.image.resizeBilinear(tensor, [64, 64]);
+          tensor = tensor.div(255.0);
+          tensor = tensor.expandDims(0);
+          return tensor;
+        });
+        
+        const prediction = await this.clotClassifier.predict(regionTensor);
+        const probabilities = await prediction.data();
+        regionTensor.dispose();
+        prediction.dispose();
+        
+        // Classes: [not_clot, small_clot, large_clot, old_blood]
+        const maxIdx = probabilities.indexOf(Math.max(...probabilities));
+        const confidence = Math.round(probabilities[maxIdx] * 100);
+        
+        const clotTypes = ['not_clot', 'small_clot', 'large_clot', 'concentrated_blood'];
+        const clotType = clotTypes[maxIdx];
+        const isClot = maxIdx === 1 || maxIdx === 2;
+        
+        if (confidence >= opts.modelConfidenceThreshold * 100) {
+          const areaCm2 = this._pixelsToCm2(region.pixels, opts.scalePxPerCm);
+          
+          results.push({
+            pixels: region.pixels,
+            bbox: region.bbox,
+            isClot,
+            clotType,
+            confidence,
+            estimatedCm2: areaCm2,
+            aiPrediction: {
+              probabilities: {
+                notClot: Math.round(probabilities[0] * 100),
+                smallClot: Math.round(probabilities[1] * 100),
+                largeClot: Math.round(probabilities[2] * 100),
+                concentratedBlood: Math.round(probabilities[3] * 100)
+              }
+            }
+          });
+        }
+      } catch (error) {
+        console.warn('Failed to classify region:', error);
+      }
+    }
+    
+    return results.sort((a, b) => b.confidence - a.confidence);
+  }
+
+  _calculateCoverage(segmentationMask) {
+    return tf.tidy(() => {
+      // Count pixels: 0=background, 1=blood, 2=clot
+      const total = segmentationMask.size;
+      const bloodAndClot = segmentationMask.greater(0).sum().dataSync()[0];
+      
+      return bloodAndClot / total;
+    });
+  }
+
+  _assessRisk(clots, flow) {
+    const estimatedMl = flow.estimatedMl;
+    const hasLargeClots = clots.some(c => c.isClot && c.clotType === 'large_clot');
+    const hasMultipleClots = clots.filter(c => c.isClot).length >= 2;
+    
+    if (estimatedMl >= 250) {
+      return 'high';
+    } else if (hasLargeClots || (hasMultipleClots && estimatedMl > 80)) {
+      return 'moderate';
+    } else if (estimatedMl < 200 && !hasLargeClots) {
+      return 'low';
+    } else {
+      return 'moderate';
+    }
+  }
+
+  _generateFindings(clots, flow, coverage) {
+    const findings = [];
+    
+    findings.push(`${flow.description} (Estimated blood loss: ${flow.estimatedMl} ml)`);
+    findings.push(`Visual Coverage: ${Math.round(coverage * 100)}% of pad area shows blood.`);
+    
+    const actualClots = clots.filter(c => c.isClot);
+    if (actualClots.length > 0) {
+      findings.push(`${actualClots.length} blood clot(s) detected by AI model.`);
+    }
+    
+    const darkRegions = clots.filter(c => !c.isClot && c.clotType === 'concentrated_blood');
+    if (darkRegions.length > 0) {
+      findings.push(`${darkRegions.length} concentrated blood region(s) detected.`);
+    }
+    
+    const largeClots = actualClots.filter(c => c.estimatedCm2 && c.estimatedCm2 >= 1.5);
+    if (largeClots.length > 0) {
+      findings.push(`${largeClots.length} large blood clot(s) (>= 1.5cm²) detected - clinical assessment recommended.`);
+    }
+    
+    if (flow.level === 'critical') {
+      findings.push('⚠️ CRITICAL: Flow volume exceeds 250mL - immediate medical attention needed.');
+    } else if (flow.level === 'heavy') {
+      findings.push('Heavy flow detected (15-249mL) - close monitoring recommended.');
+    }
+    
+    return findings.filter(Boolean);
   }
 
   _estimateFlow(weightGrams, visualCoverage, padDryWeightGrams = 5) {
@@ -368,25 +487,65 @@ class PadAnalyzer {
 
   _buildRecommendations(riskLevel, flow, clots) {
     const rec = [];
+    const actualClots = clots.filter(c => c.isClot);
+    const largeClots = actualClots.filter(c => c.estimatedCm2 && c.estimatedCm2 >= 1.5);
     
     if (riskLevel === 'high' || flow.level === 'critical') {
       rec.push('🚨 **IMMEDIATE CLINICAL ASSESSMENT RECOMMENDED.** Estimated blood loss is 250mL or higher.');
-      rec.push('High volume of loss and/or critical flow detected. Monitor vitals closely.');
+      rec.push('High volume blood loss detected by AI analysis. Monitor vitals and seek medical attention.');
     } else if (riskLevel === 'moderate') {
-      rec.push('Monitor closely; re-check in 30-60 minutes. Presence of blood clots indicates a potential concern.');
+      rec.push('⚠️ Monitor closely and re-check in 30-60 minutes. AI detected concerning patterns.');
+      if (actualClots.length > 0) {
+        rec.push(`AI detected ${actualClots.length} blood clot(s). Document and consider clinical assessment.`);
+      }
     } else {
-      rec.push('Routine monitoring recommended. Flow volume is low and no blood clots were detected.');
+      rec.push('✓ Routine monitoring recommended. AI analysis shows normal flow patterns with no significant clots.');
     }
-
-    if (clots.some(c => c.estimatedCm2 && c.estimatedCm2 >= 1.5)) {
-      rec.push('Document large blood clots (>= 1.5cm²) and consider clinical assessment.');
+    
+    if (largeClots.length > 0) {
+      rec.push(`⚠️ ${largeClots.length} large blood clot(s) (>= 1.5cm²) detected by AI. Clinical documentation recommended.`);
     }
     
     if (flow.level === 'heavy') {
-      rec.push('Heavy flow detected: ensure adequate hydration and monitor for signs of excessive blood loss.');
+      rec.push('Heavy flow detected: Ensure adequate hydration and iron intake. Monitor for signs of anemia.');
     }
+    
+    const avgConfidence = actualClots.reduce((sum, c) => sum + c.confidence, 0) / actualClots.length;
+    if (actualClots.length > 0 && avgConfidence < 75) {
+      rec.push('ℹ️ Note: AI confidence is moderate. Consider repeat scan or clinical confirmation.');
+    }
+    
     return rec;
+  }
+
+  _pixelsToCm2(pixels, scalePxPerCm) {
+    if (!scalePxPerCm || scalePxPerCm <= 0) return null;
+    const scaleFactor = 224 / 800; 
+    const adjustedScale = scalePxPerCm * scaleFactor;
+    const cm2 = pixels / (adjustedScale * adjustedScale);
+    return Math.round(cm2 * 10) / 10;
+  }
+
+  _loadImage(imageSource) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = (e) => reject(new Error('Image failed to load: ' + e));
+      if (typeof imageSource === 'string') {
+        img.src = imageSource;
+      } else if (imageSource instanceof File) {
+        const reader = new FileReader();
+        reader.onload = e => img.src = e.target.result;
+        reader.onerror = e => reject(e);
+        reader.readAsDataURL(imageSource);
+      } else {
+        reject(new Error('Unsupported imageSource type'));
+      }
+    });
   }
 }
 
 export const padAnalyzer = new PadAnalyzer();
+
+export default PadAnalyzer;

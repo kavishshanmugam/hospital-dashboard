@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, AlertCircle, CheckCircle, Brain, Activity, Droplet, Info, X } from 'lucide-react';
 
-// Simplified PadAnalyzer without Teachable Machine
 class PadAnalyzer {
   constructor(options = {}) {
     this.options = {
@@ -17,7 +16,7 @@ class PadAnalyzer {
       padDryWeightGrams: options.padDryWeightGrams ?? 5,
       ...options
     };
-    this.initialized = true; // No model needed
+    this.initialized = true; 
   }
 
   async initialize() {
@@ -64,7 +63,7 @@ class PadAnalyzer {
       if (comp.pixels > mergedOptions.maxClotPixels) return;
 
       const meanValue = comp.sumValue / comp.pixels;
-      const meanSaturation = comp.sumSaturation / comp.pixels; // Calculate average saturation
+      const meanSaturation = comp.sumSaturation / comp.pixels; 
       const darkerThanBlood = (avgBloodValue - meanValue);
 
       const areaCm2 = this._pixelsToCm2(comp.pixels, mergedOptions.scalePxPerCm);
@@ -85,7 +84,7 @@ class PadAnalyzer {
       // DARK REGIONS: Darker red areas (high saturation = colored, not grayscale)
       else if (meanValue > mergedOptions.valueMaxForClot && 
                meanValue <= mergedOptions.valueMaxForDarkRegion && 
-               meanSaturation > 0.30 && // Must have color (not grayscale)
+               meanSaturation > 0.30 &&
                darkerThanBlood > 0.06) {
         darkRegions.push({
           pixels: comp.pixels,
