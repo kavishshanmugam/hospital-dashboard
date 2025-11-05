@@ -1,9 +1,8 @@
 import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { collection, query, where, onSnapshot, doc, updateDoc, addDoc } from "firebase/firestore";
-import { db, auth } from "../utils/firebase";
+import { collection, onSnapshot } from "firebase/firestore";
+import { db } from "../config/firebase";
 import MeasurementPopup from "../components/MeasurementPopup";
-import { usePadAnalysis } from "../hooks/usePadAnalysis";
 import { 
   Users, 
   UserPlus, 
@@ -18,80 +17,22 @@ import {
 export default function Patients() {
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [pending, setPending] = useState(null); 
-
-  const { isReady, analyze, loading: analysisLoading, error: analysisError } = usePadAnalysis();
 
   useEffect(() => {
-    const uid = auth.currentUser?.uid;
-    
-    // Listen for new hospital measurements not yet assigned
-    const unsubPending = onSnapshot(collection(db, "hospital_measurements"), (snap) => {
-      snap.docChanges().forEach((change) => {
-        if (change.type === "added") {
-          const data = change.doc.data();
-          if (!data.assigned) {
-            if (!pending || pending.id !== change.doc.id) {
-                setPending({ id: change.doc.id, ...data });
-            }
-          }
-        }
-      });
-    });
-    
-    // For demo: Show all patients instead of filtering by nurse
-    // In production, you would use: query(collection(db, "patients"), where("assignedNurse", "==", uid))
+    // Listen to all patients
     const unsubPatients = onSnapshot(collection(db, "patients"), (snap) => {
-      const patientsData = snap.docs.map((d) => ({ id: d.id, data: d.data() })); 
+      const patientsData = snap.docs.map((d) => ({ 
+        id: d.id, 
+        data: d.data() 
+      })); 
       setPatients(patientsData);
       setLoading(false);
     });
 
     return () => {
-      unsubPending();
       unsubPatients();
     };
-  }, [pending?.id]); 
-
-  const assignPatient = async (patientId) => {
-    if (!pending || analysisLoading || !isReady) {
-      if (!isReady) alert('AI analyzer is not ready. Please wait a moment.');
-      return;
-    }
-    
-    const imageUrl = pending.imageUrl; 
-    
-    let analysisResult = null;
-    if (imageUrl) {
-        try {
-            analysisResult = await analyze(imageUrl);
-        } catch (error) {
-            console.error('AI Analysis failed during assignment:', error);
-            alert('AI Analysis failed. Assigning measurement without analysis results.');
-        }
-    } else {
-        alert('Missing image URL for AI analysis. Measurement will be assigned without analysis.');
-    }
-
-    const measRef = doc(db, "hospital_measurements", pending.id);
-
-    try {
-        await updateDoc(measRef, { assigned: true, patientId });
-
-        await addDoc(collection(db, "patients", patientId, "measurements"), {
-            est_ml: pending.est_ml,
-            weight_g: pending.weight_g,
-            timestamp: pending.timestamp,
-            ...(imageUrl && { imageUrl }), 
-            ...(analysisResult && { analysis: analysisResult }), 
-        });
-
-        setPending(null); 
-    } catch (error) {
-        console.error("Error assigning measurement:", error);
-        alert("Failed to assign measurement. Please check console.");
-    }
-  };
+  }, []);
 
   if (loading) {
     return (
@@ -168,14 +109,8 @@ export default function Patients() {
           </div>
         </div>
         
-        {/* Measurement Popup */}
-        <MeasurementPopup 
-          measurement={pending} 
-          patients={patients} 
-          onAssign={assignPatient}
-          onClose={() => setPending(null)}
-          loading={analysisLoading} 
-        />
+        {/* Measurement Popup - Always rendered for WebSocket connection */}
+        <MeasurementPopup patients={patients} />
         
         {/* Patients Grid */}
         {patients.length === 0 ? (
